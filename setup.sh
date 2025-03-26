@@ -1,12 +1,11 @@
 #!/bin/bash
 
-# Exit on any error, but we'll handle specific cases
+# Exit on any error, but handle specific cases
 set -e
 
-# Check if script is run as root (should run as user with sudo)
+# Warn if running as root, but don’t exit
 if [ "$EUID" -eq 0 ]; then
-    echo "This script should not be run as root directly. Use 'sudo' from a regular user."
-    exit 1
+    echo "Warning: Running as root is not recommended, but proceeding anyway."
 fi
 
 # Default PostgreSQL password (override with environment variable)
