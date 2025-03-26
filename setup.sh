@@ -3,9 +3,10 @@
 # Exit on any error, but handle specific cases
 set -e
 
-# Warn if running as root, but don’t exit
-if [ "$EUID" -eq 0 ]; then
-    echo "Warning: Running as root is not recommended, but proceeding anyway."
+# Check if running directly as root (not via sudo from a user)
+if [ "$EUID" -eq 0 ] && [ -z "$SUDO_USER" ]; then
+    echo "This script should not be run directly as root. Use 'sudo' from a regular user."
+    exit 1
 fi
 
 # Default PostgreSQL password (override with environment variable)
@@ -28,13 +29,15 @@ sudo pacman -S --noconfirm base-devel git wget curl unzip || handle_error "Faile
 # Install yay (AUR helper) as the current user
 echo "Installing yay (AUR helper)..."
 if ! command -v yay &> /dev/null; then
-    # Clean up /tmp/yay if it exists
-    [ -d /tmp/yay ] && rm -rf /tmp/yay
+    # Clean up /tmp/yay if it exists (use sudo if necessary)
+    if [ -d /tmp/yay ]; then
+        sudo rm -rf /tmp/yay || handle_error "Failed to remove existing /tmp/yay directory"
+    fi
     git clone https://aur.archlinux.org/yay.git /tmp/yay || handle_error "Failed to clone yay repository"
     cd /tmp/yay
     makepkg -si --noconfirm || handle_error "Failed to build and install yay"
     cd -
-    rm -rf /tmp/yay
+    sudo rm -rf /tmp/yay || handle_error "Failed to clean up /tmp/yay"
 else
     echo "yay is already installed, skipping..."
 fi
