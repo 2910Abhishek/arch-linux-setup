@@ -1,114 +1,106 @@
 #!/bin/bash
 
-# Exit on any error, but handle specific cases
-set -e
-
-# Check if running directly as root (not via sudo from a user)
-if [ "$EUID" -eq 0 ] && [ -z "$SUDO_USER" ]; then
-    echo "This script should not be run directly as root. Use 'sudo' from a regular user."
+# Check if script is run as root
+if [ "$EUID" -ne 0 ]; then
+    echo "Please run as root or with sudo"
     exit 1
 fi
 
-# Default PostgreSQL password (override with environment variable)
-POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-"secure_default_password"}
+# Get the username of the user who invoked sudo
+REAL_USER=${SUDO_USER:-$(whoami)}
+HOME_DIR=$(eval echo ~$REAL_USER)
 
-# Function to handle errors and exit gracefully
-handle_error() {
-    echo "Error: $1"
-    exit 1
+# Function to print colored output
+print_status() {
+    echo -e "\e[1;34m==> $1\e[0m"
 }
 
-# Update the system (requires root)
-echo "Updating system..."
-sudo pacman -Syu --noconfirm || handle_error "Failed to update system"
+# Store password at the beginning
+print_status "Please enter your password once for all operations:"
+read -s PASSWORD
+echo
 
-# Install base development tools and dependencies (requires root)
-echo "Installing base tools and dependencies..."
-sudo pacman -S --noconfirm base-devel git wget curl unzip || handle_error "Failed to install base tools"
-
-# Install yay (AUR helper) as the current user
-echo "Installing yay (AUR helper)..."
-if ! command -v yay &> /dev/null; then
-    # Clean up /tmp/yay if it exists (use sudo if necessary)
-    if [ -d /tmp/yay ]; then
-        sudo rm -rf /tmp/yay || handle_error "Failed to remove existing /tmp/yay directory"
+# Function to check if command was successful
+check_status() {
+    if [ $? -eq 0 ]; then
+        echo -e "\e[1;32m==> Success: $1\e[0m"
+    else
+        echo -e "\e[1;31m==> Error: $1\e[0m"
+        exit 1
     fi
-    git clone https://aur.archlinux.org/yay.git /tmp/yay || handle_error "Failed to clone yay repository"
-    cd /tmp/yay
-    makepkg -si --noconfirm || handle_error "Failed to build and install yay"
-    cd -
-    sudo rm -rf /tmp/yay || handle_error "Failed to clean up /tmp/yay"
+}
+
+# Function to check if an AUR package is installed
+is_aur_package_installed() {
+    yay -Qi "$1" >/dev/null 2>&1
+}
+
+# Install yay if not already installed
+print_status "Checking/Installing yay AUR helper"
+if ! command -v yay &> /dev/null; then
+    cd /tmp
+    rm -rf yay  # Clean up any existing yay directory
+    sudo -u $REAL_USER git clone https://aur.archlinux.org/yay.git
+    cd yay
+    sudo -u $REAL_USER makepkg -si --noconfirm
+    cd ..
+    rm -rf yay
+    check_status "yay installation"
 else
     echo "yay is already installed, skipping..."
 fi
 
-# Install X11 and a basic desktop environment (XFCE) (requires root)
-echo "Installing XFCE desktop environment..."
-sudo pacman -S --noconfirm xfce4 xfce4-goodies xorg lightdm lightdm-gtk-greeter || handle_error "Failed to install XFCE"
-sudo systemctl enable lightdm || handle_error "Failed to enable lightdm"
+# Add system update
+print_status "Updating system packages"
+pacman -Syu --noconfirm
+check_status "System update"
 
-# Install Google Chrome (AUR package)
-echo "Installing Google Chrome..."
-yay -S --noconfirm google-chrome || handle_error "Failed to install Google Chrome"
+# Install AUR packages as non-root user
+print_status "Installing AUR packages"
+AUR_PACKAGES=(
+    "postman-bin"
+    "mongodb-compass"
+    "mongodb-bin"
+    "google-chrome"
+    "spotify"
+    "nvm"
+    "visual-studio-code-bin"
+)
 
-# Install Visual Studio Code (AUR package)
-echo "Installing Visual Studio Code..."
-yay -S --noconfirm visual-studio-code-bin || handle_error "Failed to install VS Code"
+for package in "${AUR_PACKAGES[@]}"; do
+    if ! is_aur_package_installed "$package"; then
+        echo "Installing $package..."
+        echo "$PASSWORD" | sudo -u $REAL_USER yay -S --noconfirm "$package"
+    else
+        echo "$package is already installed, skipping..."
+    fi
+done
+check_status "AUR packages installation"
 
-# Install Cursor (AUR package)
-echo "Installing Cursor..."
-yay -S --noconfirm cursor || handle_error "Failed to install Cursor"
-
-# Install Postman (AUR package)
-echo "Installing Postman..."
-yay -S --noconfirm postman-bin || handle_error "Failed to install Postman"
-
-# Install MongoDB and MongoDB Compass (AUR packages)
-echo "Installing MongoDB and MongoDB Compass..."
-yay -S --noconfirm mongodb-bin mongodb-compass || handle_error "Failed to install MongoDB and Compass"
-sudo systemctl enable --now mongod || handle_error "Failed to start MongoDB"
-
-# Install NVM (Node Version Manager) as the current user
-echo "Installing NVM..."
-if [ ! -d "$HOME/.nvm" ]; then
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash || handle_error "Failed to install NVM"
-fi
-# Load NVM into the current shell session
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-# Install the latest LTS version of Node.js
-nvm install --lts || handle_error "Failed to install Node.js LTS"
-nvm use --lts || handle_error "Failed to use Node.js LTS"
-
-# Install PostgreSQL (requires root)
-echo "Installing PostgreSQL..."
-sudo pacman -S --noconfirm postgresql || handle_error "Failed to install PostgreSQL"
-
-# Initialize PostgreSQL database (requires root)
-echo "Initializing PostgreSQL database..."
-if [ ! -d /var/lib/postgres/data ] || [ -z "$(ls -A /var/lib/postgres/data)" ]; then
-    sudo mkdir -p /var/lib/postgres/data
-    sudo chown postgres:postgres /var/lib/postgres/data
-    sudo -u postgres initdb -D /var/lib/postgres/data || handle_error "Failed to initialize PostgreSQL"
+# Configure NVM if installed
+print_status "Checking/Configuring NVM"
+if ! grep -q "NVM_DIR" "$HOME_DIR/.bashrc"; then
+    sudo -u $REAL_USER bash -c "cat >> $HOME_DIR/.bashrc << 'EOL'
+# NVM configuration
+export NVM_DIR=\"\$HOME/.nvm\"
+[ -s \"/usr/share/nvm/init-nvm.sh\" ] && \\. \"/usr/share/nvm/init-nvm.sh\"
+EOL"
+    check_status "NVM configuration"
+else
+    echo "NVM already configured, skipping..."
 fi
 
-# Start and enable PostgreSQL service (requires root)
-echo "Starting and enabling PostgreSQL service..."
-sudo systemctl enable --now postgresql || handle_error "Failed to start PostgreSQL"
+print_status "Installation completed successfully!"
+echo "Please note: Some changes might require a logout or system restart to take effect."
+echo "Script was run as root/sudo by user: $REAL_USER"
 
-# Set up PostgreSQL default user (postgres) with a password (requires root)
-echo "Setting up PostgreSQL user with password: $POSTGRES_PASSWORD"
-sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD '$POSTGRES_PASSWORD';" || handle_error "Failed to set PostgreSQL password"
-
-# Install additional useful tools (requires root)
-echo "Installing additional utilities..."
-sudo pacman -S --noconfirm vim nano terminator firefox || handle_error "Failed to install additional utilities"
-
-# Final message
-echo "Setup complete!"
-echo " - Desktop environment: XFCE (start with 'startx' or reboot)"
-echo " - PostgreSQL user: postgres, Password: $POSTGRES_PASSWORD"
-echo " - MongoDB is running (systemctl status mongod to verify)"
-echo "Rebooting in 5 seconds... (Ctrl+C to cancel)"
-sleep 5
-sudo reboot || echo "Reboot failed, please reboot manually"
+# Add restart prompt
+read -p "Would you like to restart the system now? (y/N) " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    print_status "Restarting system in 5 seconds..."
+    sleep 5
+    reboot
+else
+    echo "Please remember to restart your system later for all changes to take effect."
+fi
